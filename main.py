@@ -39,7 +39,8 @@ agente_pesquisador = Agent(
     allow_delegation=False,
     tools=[ferramenta_busca], 
     llm=cerebro_gemini,
-    max_rpm=4
+    max_rpm=4,
+    max_iter=4
 )
 
 caminho_arquivo = os.path.join(pasta_resultados, 'leads_autoescolas.csv')
