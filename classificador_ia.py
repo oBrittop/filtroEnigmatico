@@ -27,7 +27,6 @@ for index, row in df.head(limite_teste).iterrows():
     
     print(f"Analisando: {nome}...")
     
-    # 2. Criação do Prompt Estratégico
     prompt = f"""
     Você é um consultor de tecnologia especialista em prospecção B2B via WhatsApp.
     Seu alvo agora é uma autoescola chamada "{nome}".
@@ -62,7 +61,6 @@ for index, row in df.head(limite_teste).iterrows():
 df_teste = df.head(limite_teste).copy()
 df_teste['abordagem_whatsapp'] = mensagens_vendas
 
-# 4. Salva o resultado final
 caminho_saida = "resultados_prospeccao/leads_prontos_venda.csv"
 df_teste.to_csv(caminho_saida, index=False, encoding='utf-8-sig')
 
