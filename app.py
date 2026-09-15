@@ -6,32 +6,38 @@ import time
 from dotenv import load_dotenv
 from google import genai
 import pywhatkit
+from apify_client import ApifyClient
 
+# Carregar chaves
 load_dotenv()
-chave = os.getenv("GEMINI_API_KEY")
+chave_gemini = os.getenv("GEMINI_API_KEY")
+chave_apify = os.getenv("APIFY_API_TOKEN")
 
-if not chave:
-    st.error("Chave da API do Gemini não encontrada no arquivo .env!")
-
+# Configuração da página
 st.set_page_config(page_title="Máquina de Vendas B2B", page_icon="🚀", layout="wide")
 st.title("🚀 Máquina de Vendas B2B")
 
-tab1, tab2, tab3 = st.tabs(["📂 1. Upload & Limpeza", "🧠 2. Inteligência Artificial", "📲 3. Disparo WhatsApp"])
+if not chave_gemini:
+    st.error("⚠️ Chave do Gemini (GEMINI_API_KEY) não encontrada no arquivo .env!")
 
+# Abas do App
+tab1, tab2, tab3 = st.tabs(["🔍 1. Buscar Leads (Apify)", "🧠 2. Inteligência Artificial", "📲 3. Disparo WhatsApp"])
+
+# Inicializando variaveis de sessão
 if 'df_limpo' not in st.session_state:
     st.session_state.df_limpo = None
 if 'df_com_ia' not in st.session_state:
     st.session_state.df_com_ia = None
 
-# --- ABA 1: UPLOAD ---
+# --- ABA 1: UPLOAD OU APIFY ---
 with tab1:
-    st.header("Upload da Planilha Bruta")
-    st.write("Faça o upload do CSV gerado pelo extrator do Google Maps (Apify/Instant Data).")
+    st.header("Captura de Leads")
     
-    arquivo = st.file_uploader("Escolha um arquivo CSV", type=['csv'])
+    modo = st.radio("Como você quer trazer os clientes hoje?", ["Busca Automática (Apify)", "Upload de Planilha CSV"])
     
-    if arquivo is not None:
-        try:
+    if modo == "Upload de Planilha CSV":
+        arquivo = st.file_uploader("Escolha o arquivo CSV bruto", type=['csv'])
+        if arquivo is not None:
             df_bruto = pd.read_csv(arquivo)
             st.success(f"Arquivo carregado com sucesso! ({len(df_bruto)} linhas)")
             
@@ -44,51 +50,103 @@ with tab1:
             
             df = df.fillna("Não informado")
             st.session_state.df_limpo = df
-            
-            st.write(f"**Leads válidos (com telefone): {len(df)}**")
             st.dataframe(df)
+
+    elif modo == "Busca Automática (Apify)":
+        if not chave_apify:
+            st.warning("⚠️ Você precisa adicionar a APIFY_API_TOKEN no arquivo .env para usar este modo.")
+        else:
+            st.write("Digite o nicho e a região para que o robô busque no Google Maps em tempo real.")
             
-        except Exception as e:
-            st.error(f"Erro ao processar arquivo: {e}")
+            busca = st.text_input("Ex: 'Clínica Odontológica no Rio de Janeiro'")
+            limite_leads = st.number_input("Máximo de empresas para buscar", min_value=1, max_value=200, value=20)
+            
+            if st.button("Iniciar Raspagem Automática"):
+                if not busca:
+                    st.error("Digite o que deseja buscar.")
+                else:
+                    with st.spinner(f"Acordando o robô da Apify e buscando por '{busca}'... (pode demorar 1-3 minutos)"):
+                        try:
+                            # Conecta na Apify
+                            apify_client = ApifyClient(chave_apify)
+                            
+                            # Configura a busca para o Google Maps Scraper da Apify
+                            run_input = {
+                                "searchStringsArray": [busca],
+                                "maxCrawledPlacesPerSearch": limite_leads,
+                                "language": "pt",
+                            }
+                            
+                            # Roda o Google Maps Scraper (Actor ID comum)
+                            # O actor 'compass/crawler-google-places' é muito usado, mas 'drobnikj/crawler-google-places' também. 
+                            # Se der erro de permissão, o usuário pode trocar para o ID do actor que ele alugou.
+                            run = apify_client.actor("compass/crawler-google-places").call(run_input=run_input)
+                            
+                            # Extrai os resultados
+                            itens = apify_client.dataset(run["defaultDatasetId"]).list_items().items
+                            
+                            df_bruto = pd.DataFrame(itens)
+                            st.success(f"Extração concluída! {len(df_bruto)} locais encontrados.")
+                            
+                            # Limpeza e Padronização
+                            # A Apify retorna colunas variáveis, vamos tentar pegar as principais
+                            if not df_bruto.empty:
+                                if 'title' not in df_bruto.columns: df_bruto['title'] = df_bruto.get('name', 'Sem nome')
+                                if 'phone' not in df_bruto.columns: df_bruto['phone'] = df_bruto.get('phoneUnformatted', df_bruto.get('phoneNumber', ''))
+                                
+                                colunas_desejadas = ['title', 'phone', 'address', 'website', 'categoryName']
+                                filtro_colunas = [col for col in colunas_desejadas if col in df_bruto.columns]
+                                df = df_bruto[filtro_colunas].copy()
+                                
+                                if 'phone' in df.columns:
+                                    df = df.dropna(subset=['phone'])
+                                
+                                df = df.fillna("Não informado")
+                                st.session_state.df_limpo = df
+                                st.write(f"**Leads válidos (com telefone): {len(df)}**")
+                                st.dataframe(df)
+                            else:
+                                st.error("A busca retornou zero resultados.")
+                        except Exception as e:
+                            st.error(f"Erro na extração via Apify: {e}")
+                            st.info("Dica: Verifique se a sua chave APIFY_API_TOKEN está correta ou se a conta tem limite disponível.")
 
 # --- ABA 2: IA ---
 with tab2:
     st.header("Gerar Abordagem Personalizada com Gemini")
     
-    if st.session_state.df_limpo is not None:
+    if st.session_state.df_limpo is not None and not st.session_state.df_limpo.empty:
         df_ia = st.session_state.df_limpo.copy()
         
-        limite = st.number_input("Quantos leads processar agora?", min_value=1, max_value=len(df_ia), value=min(3, len(df_ia)))
+        limite = st.number_input("Quantos leads processar com a IA agora?", min_value=1, max_value=len(df_ia), value=min(3, len(df_ia)))
         
         if st.button("Iniciar Inteligência Artificial"):
             try:
-                client = genai.Client(api_key=chave)
+                client = genai.Client(api_key=chave_gemini)
                 mensagens_vendas = []
                 
                 barra = st.progress(0)
                 status = st.empty()
                 
-                # Vamos iterar com limite
                 df_processar = df_ia.head(limite).copy()
                 total = len(df_processar)
-                
-                # Para consertar o bug do Streamlit index na hora de exibir a barra
                 i = 0
+                
                 for index, row in df_processar.iterrows():
                     nome = row.get('title', 'Empresa')
                     site = row.get('website', 'Não informado')
                     
-                    status.text(f"Analisando: {nome}...")
+                    status.text(f"Analisando site de: {nome}...")
                     
                     prompt = f"""
                     Você é um consultor de tecnologia especialista em prospecção B2B via WhatsApp.
-                    Seu alvo agora é uma autoescola chamada "{nome}". O site atual deles é: "{site}".
+                    Seu alvo agora é uma empresa chamada "{nome}". O site atual deles é: "{site}".
                     
                     Regras:
-                    1. Se o site for "Não informado", focar em alertar a falta de presença online e oferecer criação de site + chatbot.
-                    2. Se já tiverem site, elogie e ofereça apenas o Chatbot para agilizar o atendimento de alunos no WhatsApp.
-                    3. Seja curto (máximo 4 linhas), casual (não seja robô).
-                    4. Não use nomes falsos, diga apenas que é da área de tech.
+                    1. Se o site for "Não informado", foque em alertar a falta de presença online (estão perdendo clientes) e ofereça a criação de um site + sistema de automação.
+                    2. Se já tiverem site, elogie e ofereça apenas a Automação/Chatbot de WhatsApp para agilizar o atendimento.
+                    3. Seja curto (máximo 4 linhas), direto e pareça humano.
+                    4. Não use nomes falsos, diga apenas que trabalha com tecnologia.
                     
                     Responda APENAS com a mensagem final.
                     """
@@ -102,7 +160,7 @@ with tab2:
                     
                     i += 1
                     barra.progress(i / total)
-                    time.sleep(3) # Limite de requisições da API
+                    time.sleep(3) # Pausa para evitar rate limit da cota grátis
                 
                 df_processar['abordagem_whatsapp'] = mensagens_vendas
                 st.session_state.df_com_ia = df_processar
@@ -110,27 +168,25 @@ with tab2:
                 status.success("Abordagens geradas com sucesso!")
                 st.dataframe(df_processar[['title', 'abordagem_whatsapp']])
                 
-                # Opção de download
                 csv = df_processar.to_csv(index=False).encode('utf-8-sig')
-                st.download_button("Baixar Planilha Pronta", data=csv, file_name="leads_prontos.csv", mime='text/csv')
+                st.download_button("Baixar Planilha de Vendas Pronta", data=csv, file_name="leads_prontos.csv", mime='text/csv')
                 
             except Exception as e:
                 st.error(f"Erro na API do Gemini: {e}")
     else:
-        st.warning("Volte na Aba 1 e faça o upload da planilha limpa primeiro.")
+        st.warning("Vá na Aba 1 e traga alguns leads primeiro.")
 
 # --- ABA 3: DISPARO WPP ---
 with tab3:
     st.header("Disparador do WhatsApp Web")
-    st.warning("ATENÇÃO: Este método exige que você não mexa no mouse ou teclado durante o envio. Deixe o WhatsApp Web logado no Chrome.")
+    st.warning("ATENÇÃO: Não mexa no mouse ou teclado durante o envio. O WhatsApp Web precisa estar logado.")
     
     if st.session_state.df_com_ia is not None:
         df_disparo = st.session_state.df_com_ia.copy()
         st.write(f"Temos {len(df_disparo)} leads prontos para envio.")
         
-        # Parâmetros de segurança para o PyWhatKit (Resolvendo o erro da bolinha vermelha)
-        wait_time = st.slider("Tempo de espera para o Zap carregar (segundos)", 15, 40, 20)
-        close_time = st.slider("Tempo de espera ANTES de fechar a aba (segundos) - *Aumente se der bolinha vermelha*", 3, 15, 6)
+        wait_time = st.slider("Espera do Zap carregar (segundos)", 15, 40, 20)
+        close_time = st.slider("Espera antes de fechar a aba (segundos) - Evita bolinha vermelha", 3, 15, 6)
         
         if st.button("🚨 INICIAR DISPAROS"):
             status_envio = st.empty()
@@ -142,11 +198,11 @@ with tab3:
                 
                 telefone_limpo = re.sub(r'[^0-9+]', '', telefone)
                 
-                if len(telefone_limpo) < 10 or mensagem == 'nan' or not mensagem:
+                if len(telefone_limpo) < 10 or not mensagem or mensagem.lower() == 'nan':
                     st.toast(f"Pulado: {nome}")
                     continue
                 
-                status_envio.text(f"Enviando para {nome}...")
+                status_envio.text(f"Disparando para {nome}...")
                 
                 try:
                     pywhatkit.sendwhatmsg_instantly(
@@ -156,11 +212,11 @@ with tab3:
                         tab_close=True, 
                         close_time=close_time
                     )
-                    st.toast(f"Enviado: {nome}")
-                    time.sleep(10)
+                    st.toast(f"✅ Enviado: {nome}")
+                    time.sleep(10) # Imita o atraso de digitação/respiração humana
                 except Exception as e:
                     st.error(f"Erro ao enviar para {nome}: {e}")
             
             status_envio.success("Disparos finalizados!")
     else:
-        st.warning("Você precisa gerar as mensagens na Aba 2 primeiro.")
+        st.warning("Vá na Aba 2 e gere as mensagens primeiro.")
