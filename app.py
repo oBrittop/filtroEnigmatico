@@ -15,6 +15,39 @@ chave_apify = os.getenv("APIFY_API_TOKEN")
 
 # Configuração da página
 st.set_page_config(page_title="Máquina de Vendas B2B", page_icon="🚀", layout="wide")
+
+def check_password():
+    """Retorna True se o usuário tiver inserido a senha correta."""
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Pega a senha do .env (Se não existir, usa 'admin123' como padrão provisório)
+    senha_correta = os.getenv("APP_PASSWORD", "admin123")
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.title("🔒 Acesso Restrito")
+        st.write("Faça login para acessar a Máquina de Vendas.")
+        usuario = st.text_input("Usuário")
+        senha = st.text_input("Senha", type="password")
+        
+        if st.button("Entrar"):
+            # Libera o acesso para 'admin' com a senha do .env
+            if usuario == "admin" and senha == senha_correta:
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("😕 Usuário ou senha incorretos.")
+                
+    return False
+
+# Se a senha não estiver correta, para a execução do app aqui.
+if not check_password():
+    st.stop()
+
+# ==========================================
+# APP PRINCIPAL (Só roda se passar do login)
+# ==========================================
 st.title("🚀 Máquina de Vendas B2B")
 
 if not chave_gemini:
